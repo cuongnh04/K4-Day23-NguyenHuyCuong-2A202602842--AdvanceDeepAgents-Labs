@@ -5,6 +5,7 @@ research.py uploads this file to the sandbox and the lead agent runs it with the
 It must exit 0 and print "OK: ..." when the report is consistent, else print each problem and exit 1.
 """
 import json
+import re
 import sys
 
 REPORT = "/tmp/work/report/report.md"
@@ -32,7 +33,61 @@ def check(report_text, sources):
           (a line bundling several sources under one number is a problem)
       return problems
     """
-    raise NotImplementedError("TODO: implement check()")
+    problems = []
+    if not isinstance(sources, list) or not sources:
+        return ["no sources in sources.json"]
+    by_number = {}
+    by_url = set()
+    for source in sources:
+        number = source.get("n") if isinstance(source, dict) else None
+        url = source.get("url") if isinstance(source, dict) else None
+        if not isinstance(number, int):
+            problems.append(f"source n={number!r} is not an int")
+        elif number in by_number:
+            problems.append(f"source [{number}] appears more than once")
+        else:
+            by_number[number] = source
+        if not isinstance(url, str) or not re.match(r"^https?://", url):
+            problems.append(f"source [{number}] url is not http(s)")
+        elif url in by_url:
+            problems.append(f"duplicate source URL: {url}")
+        else:
+            by_url.add(url)
+
+    heading = re.search(r"(?m)^##[ \t]+References[ \t]*$", report_text)
+    if not heading:
+        problems.append("missing ## References heading")
+        body, references = report_text, ""
+    else:
+        body, references = report_text[:heading.start()], report_text[heading.end():]
+
+    citation_pattern = re.compile(r"\[(\d+)\]")
+    cited = {int(number) for number in citation_pattern.findall(body)}
+    for number in sorted(cited - set(by_number)):
+        problems.append(f"[{number}] cited but missing from sources.json")
+    for number in sorted(set(by_number) - cited):
+        problems.append(f"source [{number}] never cited")
+
+    ref_lines = [line for line in references.splitlines() if re.match(r"^\s*\[\d+\]", line)]
+    seen_refs = {}
+    for line in ref_lines:
+        match = re.match(r"^\s*\[(\d+)\]\s+", line)
+        if not match:
+            continue
+        number = int(match.group(1))
+        urls = re.findall(r"https?://\S+", line)
+        if number in seen_refs:
+            problems.append(f"reference [{number}] appears more than once")
+        seen_refs[number] = line
+        if number not in by_number:
+            problems.append(f"reference [{number}] is not in sources.json")
+        if len(urls) != 1:
+            problems.append(f"reference [{number}] must contain exactly one URL")
+        elif number in by_number and urls[0].rstrip(".,)") != by_number[number]["url"]:
+            problems.append(f"reference [{number}] URL does not match sources.json")
+    for number in sorted(set(by_number) - set(seen_refs)):
+        problems.append(f"missing reference line for source [{number}]")
+    return problems
 
 
 def main(argv):
